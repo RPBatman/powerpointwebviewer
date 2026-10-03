@@ -1,0 +1,41 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # The ?v= cache-buster only works if it changes with every release.
+      - name: Check version stamps match
+        run: |
+          v=$(grep -oP '(?<=<Version>)[^<]+' manifest.xml)
+          grep -q "viewer.html?v=$v\"" manifest.xml || { echo "::error::SourceLocation ?v= must equal <Version> ($v)"; exit 1; }
+          grep -q "VIEWER_VERSION = '$v'" viewer.html || { echo "::error::VIEWER_VERSION in viewer.html must equal $v"; exit 1; }
+
+      - name: Assemble site
+        run: |
+          mkdir _site
+          cp viewer.html manifest.xml icon.svg icon-32.png icon-80.png _site/
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+      - id: deployment
+        uses: actions/deploy-pages@v4

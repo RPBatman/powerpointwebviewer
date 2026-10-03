@@ -216,62 +216,26 @@
       max-width: 460px;
     }
 
-    /* Branding footer */
-    #branding {
+    /* Save status note */
+    #saveNote {
       position: absolute;
-      bottom: 0;
-      left: 0;
-      right: 0;
-      z-index: 90;
-      background: linear-gradient(135deg, #1a1a2e, #16213e);
-      color: rgba(255,255,255,0.85);
-      padding: 6px 16px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      font-size: 11px;
+      left: 50%;
+      bottom: 12px;
+      transform: translateX(-50%);
+      z-index: 110;
+      max-width: calc(100% - 24px);
+      padding: 6px 14px;
+      border-radius: 8px;
+      font-size: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      opacity: 0;
+      pointer-events: none;
       transition: opacity 0.3s ease;
     }
-    #branding.hidden { opacity: 0; pointer-events: none; }
-    #branding .brand-left {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    #branding .brand-logo {
-      width: 20px;
-      height: 20px;
-      background: linear-gradient(135deg, #4a90d9, #63b3ed);
-      border-radius: 5px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: 900;
-      font-size: 12px;
-      color: white;
-    }
-    #branding .brand-name {
-      font-weight: 700;
-      color: #63b3ed;
-      letter-spacing: 0.3px;
-    }
-    #branding .brand-separator {
-      color: rgba(255,255,255,0.3);
-      margin: 0 2px;
-    }
-    #branding .brand-author {
-      color: rgba(255,255,255,0.6);
-      font-weight: 400;
-    }
-    #branding .brand-right {
-      color: rgba(255,255,255,0.4);
-      font-size: 10px;
-    }
-    #branding a {
-      color: #63b3ed;
-      text-decoration: none;
-    }
-    #branding a:hover { text-decoration: underline; }
+    #saveNote.visible { opacity: 1; }
+    #saveNote.ok { background: #d4edda; color: #155724; border: 1px solid #28a745; }
+    #saveNote.warn { background: #fff3cd; color: #856404; border: 1px solid #ffc107; }
+    #saveNote.error { background: #f8d7da; color: #721c24; border: 1px solid #dc3545; }
 
     /* Loading spinner */
     #loading {
@@ -298,7 +262,8 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
   </style>
-  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"
+          onerror="window.officeJsLoadFailed = true"></script>
 </head>
 <body>
 <div id="appWrapper">
@@ -326,22 +291,6 @@
     <h2>Live Website Viewer</h2>
     <p>Enter a website URL above and click <strong>Load</strong> to display it inside this slide.</p>
     <p style="margin-top: 8px; font-size: 13px; color: #999;">💡 Tip: paste a YouTube or Vimeo link to embed a video.</p>
-    <div style="margin-top: 24px; opacity: 0.5; font-size: 12px; color: #999;">
-      Created by <strong>Pedro Hernandez</strong> &mdash; PeopleWorks Services
-    </div>
-  </div>
-
-  <!-- Branding footer -->
-  <div id="branding">
-    <div class="brand-left">
-      <div class="brand-logo">P</div>
-      <span class="brand-name">PeopleWorks</span>
-      <span class="brand-separator">|</span>
-      <span class="brand-author">by Pedro Hernandez</span>
-    </div>
-    <div class="brand-right">
-      <a href="https://powerpointwebviewer.peopleworksservices.com" target="_blank">powerpointwebviewer.peopleworksservices.com</a>
-    </div>
   </div>
 
   <!-- Loading indicator -->
@@ -350,8 +299,11 @@
     <div class="loading-text">Loading website...</div>
   </div>
 
-  <!-- Website frame -->
-  <iframe id="webFrame" src=""
+  <!-- Save status note -->
+  <div id="saveNote" role="status" aria-live="polite"></div>
+
+  <!-- Website frame (no src until a URL is loaded) -->
+  <iframe id="webFrame"
           allow="autoplay; encrypted-media; fullscreen; picture-in-picture; clipboard-write; accelerometer; gyroscope; web-share"
           allowfullscreen
           sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-top-navigation allow-presentation allow-downloads allow-modals"></iframe>
@@ -365,9 +317,14 @@
     const loading = document.getElementById('loading');
     const config = document.getElementById('config');
     const toggleBtn = document.getElementById('toggleBtn');
-    const branding = document.getElementById('branding');
     const envBadge = document.getElementById('envBadge');
     const appWrapper = document.getElementById('appWrapper');
+    const saveNote = document.getElementById('saveNote');
+
+    // Keep in sync with <Version> and the ?v= query in manifest.xml
+    const VIEWER_VERSION = '1.4.0.0';
+    const SETTINGS_KEY = 'webViewerUrl';
+    const OFFICE_READY_TIMEOUT_MS = 15000;
 
     let controlsVisible = true;
     let isOnline = false;        // true if running in PowerPoint Online
@@ -375,10 +332,16 @@
     let currentUrl = '';
     let loadTimeoutId = null;
     let iframeLoadFailed = false;
+    let saveNoteTimeoutId = null;
+    let officeHost = null;       // e.g. Office.HostType.PowerPoint; null when standalone
+    let pendingSaveUrl = null;   // URL loaded before Office.js was ready
+    let officeReadyWatchdogId = null;
 
     // ─── Detect environment ───────────────────────────────
-    function detectEnvironment() {
+    function detectEnvironment(info) {
+      envBadge.title = 'Live Website Viewer v' + VIEWER_VERSION;
       try {
+        if (!info || !info.host) throw new Error('Not running inside Office');
         // Office.context.platform: 'OfficeOnline', 'PC', 'Mac', 'iOS', 'Android'
         const platform = Office.context.platform;
         if (platform === Office.PlatformType.OfficeOnline) {
@@ -473,6 +436,13 @@
       return url;
     }
 
+    // ─── Escape text for use in innerHTML ─────────────────
+    function escapeHtml(text) {
+      var div = document.createElement('div');
+      div.textContent = String(text);
+      return div.innerHTML;
+    }
+
     // ─── Show error in overlay ────────────────────────────
     function showError(title, message, showButtons) {
       overlay.classList.remove('hidden');
@@ -494,6 +464,30 @@
       loading.classList.remove('active');
     }
 
+    // ─── Show a fatal startup error with a Reload button ──
+    function showFatalError(title, message) {
+      clearTimeout(loadTimeoutId);
+      loading.classList.remove('active');
+      overlay.classList.remove('hidden');
+      overlay.innerHTML =
+        '<div class="emoji">⚠️</div>' +
+        '<h2>' + escapeHtml(title) + '</h2>' +
+        '<p>' + escapeHtml(message) + '</p>' +
+        '<div style="margin-top: 16px;"><button class="overlay-btn secondary" onclick="location.reload()">Reload</button></div>';
+    }
+
+    // ─── Show the small save-status note ──────────────────
+    function showSaveNote(text, kind, sticky) {
+      clearTimeout(saveNoteTimeoutId);
+      saveNote.textContent = text;
+      saveNote.className = kind + ' visible';
+      if (!sticky) {
+        saveNoteTimeoutId = setTimeout(function () {
+          saveNote.classList.remove('visible');
+        }, 6000);
+      }
+    }
+
     // ─── Show welcome screen ──────────────────────────────
     function showWelcome() {
       overlay.classList.remove('hidden');
@@ -506,9 +500,6 @@
         html += '<div class="tip" style="margin-top: 16px;"><strong>PowerPoint Online detected:</strong> Some websites may not display inside the frame. If a site does not load, use the <strong>"Window"</strong> button to open it in a separate browser window.</div>';
       }
 
-      html += '<div style="margin-top: 24px; opacity: 0.5; font-size: 12px; color: #999;">';
-      html += 'Created by <strong>Pedro Hernandez</strong> &mdash; PeopleWorks Services';
-      html += '</div>';
       overlay.innerHTML = html;
     }
 
@@ -519,13 +510,10 @@
         config.classList.remove('hidden');
         toggleBtn.classList.remove('visible');
         envBadge.classList.remove('hidden');
-        // Show branding only if no website is loaded
-        if (!currentUrl) branding.classList.remove('hidden');
       } else {
         config.classList.add('hidden');
         toggleBtn.classList.add('visible');
         envBadge.classList.add('hidden');
-        branding.classList.add('hidden');
       }
     }
 
@@ -540,7 +528,6 @@
         return;
       }
       overlay.classList.add('hidden');
-      branding.classList.add('hidden');
       loading.classList.add('active');
       iframeLoadFailed = false;
       webFrame.src = currentUrl;
@@ -640,14 +627,32 @@
     }
 
     // ─── Save URL to Office settings ──────────────────────
+    // settings.saveAsync only writes the URL into the open presentation;
+    // it is lost unless the .pptx itself is saved afterwards.
     function saveUrl(url) {
+      if (!officeReady) {
+        pendingSaveUrl = url;  // saved once Office.onReady fires
+        return;
+      }
+      if (!officeHost) {
+        showSaveNote('Not running inside PowerPoint — URL not saved.', 'warn');
+        return;
+      }
       try {
-        if (officeReady && Office.context && Office.context.document && Office.context.document.settings) {
-          Office.context.document.settings.set('webViewerUrl', url);
-          Office.context.document.settings.saveAsync();
-        }
+        var settings = Office.context.document.settings;
+        settings.set(SETTINGS_KEY, url);
+        settings.saveAsync(function (result) {
+          if (result.status === Office.AsyncResultStatus.Succeeded) {
+            showSaveNote(isOnline
+              ? 'Saved — stored with this presentation.'
+              : 'Saved — remember to save the file (Ctrl+S).', 'ok');
+          } else {
+            var reason = result.error ? result.error.message : 'unknown error';
+            showSaveNote('URL not saved: ' + reason, 'error', true);
+          }
+        });
       } catch (e) {
-        // Silent: Office API not available (standalone/testing mode)
+        showSaveNote('URL not saved: ' + e.message, 'error', true);
       }
     }
 
@@ -671,9 +676,8 @@
       // Convert YouTube / Vimeo links to their embeddable player URL
       currentUrl = toEmbedUrl(typedUrl);
 
-      // Show loading, hide branding
+      // Show loading
       overlay.classList.add('hidden');
-      branding.classList.add('hidden');
       loading.classList.add('active');
       iframeLoadFailed = false;
 
@@ -689,6 +693,7 @@
 
     // ─── Handle iframe load events ────────────────────────
     webFrame.addEventListener('load', function () {
+      if (!currentUrl) return;  // initial about:blank, not a user URL
       clearTimeout(loadTimeoutId);
       loading.classList.remove('active');
 
@@ -714,7 +719,6 @@
           // This is the GOOD case - site loaded from a different domain
         }
         overlay.classList.add('hidden');
-        branding.classList.add('hidden');
       }
     });
 
@@ -737,36 +741,76 @@
       }
     });
 
-    // ─── Initialize with Office.js ────────────────────────
-    Office.onReady(function () {
+    // ─── Restore this slide's saved URL ───────────────────
+    // Returns true if something other than the welcome screen is shown.
+    function restoreSavedUrl() {
+      if (!officeHost) return false;
+      var savedUrl;
+      try {
+        savedUrl = Office.context.document.settings.get(SETTINGS_KEY);
+      } catch (e) {
+        showError('Could not read saved URL', escapeHtml(e.message), false);
+        return true;
+      }
+      if (typeof savedUrl !== 'string' || !savedUrl.trim()) return false;
+
+      urlInput.value = savedUrl;
+      currentUrl = toEmbedUrl(savedUrl);
+      overlay.classList.add('hidden');
+      loading.classList.add('active');
+      iframeLoadFailed = false;
+      webFrame.src = currentUrl;
+      startLoadTimeout();
+      return true;
+    }
+
+    function onOfficeReady(info) {
+      clearTimeout(officeReadyWatchdogId);
       officeReady = true;
+      officeHost = (info && info.host) || null;
 
-      // Detect environment
-      detectEnvironment();
+      detectEnvironment(info);
 
-      // Update welcome screen with environment-specific tips
-      if (!currentUrl) {
+      if (pendingSaveUrl) {
+        // User loaded a URL before Office was ready: keep it and save it
+        var url = pendingSaveUrl;
+        pendingSaveUrl = null;
+        saveUrl(url);
+      } else if (!restoreSavedUrl() && !currentUrl) {
+        // Update welcome screen with environment-specific tips
         showWelcome();
       }
+    }
 
-      // Try to load saved URL for this slide
-      try {
-        if (Office.context && Office.context.document && Office.context.document.settings) {
-          var savedUrl = Office.context.document.settings.get('webViewerUrl');
-          if (savedUrl) {
-            urlInput.value = savedUrl;
-            currentUrl = toEmbedUrl(savedUrl);
-            overlay.classList.add('hidden');
-            branding.classList.add('hidden');
-            loading.classList.add('active');
-            webFrame.src = currentUrl;
-            startLoadTimeout();
-          }
-        }
-      } catch (e) {
-        // Silent: Office API not available (standalone/testing mode)
+    // ─── Initialize with Office.js ────────────────────────
+    function initOffice() {
+      if (window.officeJsLoadFailed || typeof Office === 'undefined' || typeof Office.onReady !== 'function') {
+        detectEnvironment(null);
+        showFatalError(
+          'Office.js failed to load',
+          'The Office JavaScript library (appsforoffice.microsoft.com) could not be downloaded, ' +
+          'so this slide cannot restore or save its URL. Check your internet connection, proxy or firewall, then click Reload.'
+        );
+        return;
       }
-    });
+
+      officeReadyWatchdogId = setTimeout(function () {
+        if (!officeReady) {
+          showFatalError(
+            'PowerPoint did not respond',
+            'Office.js loaded, but PowerPoint never finished starting the add-in. ' +
+            'Click Reload, or close and reopen the presentation.'
+          );
+        }
+      }, OFFICE_READY_TIMEOUT_MS);
+
+      Office.onReady().then(onOfficeReady, function (e) {
+        clearTimeout(officeReadyWatchdogId);
+        showFatalError('Office.js failed to initialize', (e && e.message) || String(e));
+      });
+    }
+
+    initOffice();
   </script>
 </body>
 </html>
